@@ -3,18 +3,18 @@
 
 import json
 
-from dominate.tags import a, h4, h6, p
-from ezcharts.components.clinvar import load_clinvar_vcf
+from dominate.tags import a, h4, p
 from ezcharts.components.ezchart import EZChart
 from ezcharts.components.reports.labs import LabsReport
 from ezcharts.components.theme import LAB_head_resources
-from ezcharts.layout.snippets import DataTable, Grid, Stats, Tabs
+from ezcharts.layout.snippets import DataTable, Stats, Tabs
 from ezcharts.layout.snippets import Progress
 from ezcharts.plots import util
-from ezcharts.plots.categorical import barplot
+from ezcharts.plots.distribution import histplot
 from ezcharts.plots.ideogram import ideogram
 import numpy as np
 import pandas as pd
+
 
 from .report_utils.common import CHROMOSOMES  # noqa: ABS101
 from .util import wf_parser  # noqa: ABS101
@@ -111,7 +111,36 @@ def sv_stats(vcf_data):
                 p('Other SV types are: inversions, duplications and translocations.')
 
 
-def sv_size_plots(vcf_data):
+def centered_bins(dataset, values, binning_mode='sqrt'):
+    """Create bins distributed around the zero value."""
+    # Compute bins
+    edges = np.histogram_bin_edges(
+        dataset[values].dropna(), bins=binning_mode, range=None, weights=None)
+    bin_sizes = [edges[n+1]-edges[n] for n in range(0, len(edges)-1)]
+    bin_size = int(np.ceil(max(bin_sizes)))
+
+    # Define min and max values from the dataset
+    min_val = int(dataset[values].values.min())
+    max_val = int(dataset[values].values.max())
+
+    # If min_val >= 0, no deletions to consider
+    if min_val >= 0:
+        del_itvs = []
+    else:
+        del_itvs = [
+            -i for i in range(bin_size, abs(min_val) + bin_size, bin_size)][::-1]
+
+    # If max_val <= 0, no insertions to consider
+    if max_val <= 0:
+        ins_itvs = []
+    else:
+        ins_itvs = list(range(bin_size, max_val + bin_size, bin_size))
+
+    # Return all bins
+    return del_itvs + [0] + ins_itvs
+
+
+def sv_size_plots(vcf_data, max_size=5000):
     """Plot size distributions of SV calls per type."""
     tabs = Tabs()
     for (index, sample_name, vcf_df) in vcf_data:
@@ -121,61 +150,36 @@ def sv_size_plots(vcf_data):
             else:
                 p("This section shows the size distributions of SV calls per type. "
                     "Deletions have negative values.")
-                with Grid():
-                    # Extract insertions
-                    # CW-2492: ensure SVLEN is int
-                    inserts = vcf_df\
-                        .loc[vcf_df['SVTYPE'] == 'INS']\
-                        .astype({'SVLEN': int, 'END': int})
-                    if not inserts.empty:
-                        inserts = inserts[['SVTYPE', 'SVLEN']] \
-                            .groupby('SVLEN') \
-                            .count() \
-                            .reset_index()
-                        inserts.columns = ['Length', 'Count']
-                        # Define max value
-                        maxins = int(inserts.Length.max()) \
-                            if inserts.Length.max() else 0
-                        # Create min/max range of values
-                        inserts = pd.merge(pd.DataFrame({
-                            'Length': range(0, maxins + 10)
-                        }), inserts, on="Length", how="left").fillna(0)
-                        # Add insertion plot
-                        plt = barplot(data=inserts, x="Length", y="Count")
-                        # override excharts axisLabel interval
-                        plt.xAxis = dict(
-                            axisLabel=dict(interval="auto", rotate=30))
-                        plt.title = {"text": "Insertion size distribution"}
-                        EZChart(plt, 'epi2melabs')
-                    else:
-                        h4("No insertions to plot")
-                    # Extract deletions
-                    # CW-2492: ensure SVLEN is int
-                    delets = vcf_df\
-                        .loc[vcf_df['SVTYPE'] == 'DEL']\
-                        .astype({'SVLEN': int, 'END': int})
-                    if not delets.empty:
-                        delets = delets[['SVTYPE', 'SVLEN']] \
-                            .groupby('SVLEN') \
-                            .count() \
-                            .reset_index()
-                        delets.columns = ['Length', 'Count']
-                        # Define max value
-                        mindel = int(delets.Length.min()) \
-                            if delets.Length.min() else 0
-                        # Create min/max range of values
-                        delets = pd.merge(pd.DataFrame({
-                            'Length': range(mindel - 10, 1)
-                        }), delets, on="Length", how="left").fillna(0)
-                        # Add deletion plot
-                        plt = barplot(data=delets, x="Length", y="Count")
-                        # override excharts axisLabel interval
-                        plt.xAxis = dict(
-                            axisLabel=dict(interval="auto", rotate=30))
-                        plt.title = {"text": "Deletion size distribution"}
-                        EZChart(plt, 'epi2melabs')
-                    else:
-                        h4("No deletions to plot")
+                # Extract deletions
+                # CW-2492: ensure SVLEN is int
+                indels = vcf_df\
+                    .loc[(vcf_df['SVTYPE'] == 'DEL') | (vcf_df['SVTYPE'] == 'INS')]\
+                    .astype({'SVLEN': int, 'END': int})
+                # Keep SVs within range of interest
+                indels = indels.loc[np.abs(indels['SVLEN'].values) < max_size]
+                # Create plot
+                if not indels.empty:
+                    # Define bin intervals
+                    bins = centered_bins(indels, 'SVLEN')
+                    indels = indels['SVLEN']
+                    indels.columns = ['Length']
+                    # Add deletion plot
+                    plt = histplot(data=indels, bins=bins, stat='count')
+                    # override excharts axisLabel interval
+                    plt.xAxis = dict(
+                        name='Length',
+                        axisLabel=dict(
+                            interval="auto",
+                            rotate=30
+                        ),
+                        max=max_size,
+                        min=-max_size
+                        )
+                    plt.title = {"text": "Indels size distribution"}
+                    EZChart(plt, 'epi2melabs')
+                    p("The plot shows Indels with |length| < 5Kb.")
+                else:
+                    h4("No Indels to plot")
 
 
 def karyoplot(vcf_data, args):
@@ -221,12 +225,6 @@ def main(args):
         vcf_df = read_vcf(sample_vcf)
         vcf_data.append((index, sample_vcf.split('.')[0], vcf_df))
 
-    # Input all ClinVar VCFs
-    clinvar_vcf_data = []
-    for index, sample_vcf in enumerate(args.clinvar_vcf):
-        clinvar_for_report = load_clinvar_vcf(sample_vcf)
-        clinvar_vcf_data.append((index, sample_vcf.split('.')[0], clinvar_for_report))
-
     # Create report file
     report = LabsReport(
         "Structural variants analysis", "wf-human-variation",
@@ -253,44 +251,11 @@ def main(args):
                 else:
                     DataTable.from_pandas(get_sv_summary_table(vcf_df))
 
-    if not args.skip_annotation:
-        with report.add_section('ClinVar variant annotations', 'ClinVar'):
-            clinvar_docs_url = "https://www.ncbi.nlm.nih.gov/clinvar/docs/clinsig/"
-            p(
-                "The ",
-                a("SnpEff", href="https://pcingola.github.io/SnpEff/"),
-                " annotation tool has been used to annotate with",
-                a("ClinVar", href="https://www.ncbi.nlm.nih.gov/clinvar/"), '.'
-                " Variants with ClinVar annotations will appear in the ",
-                "table below, ranked according to their significance. 'Pathogenic', ",
-                "'Likely pathogenic', and 'Unknown significance' will be displayed ",
-                "first, in that order. Please note that variants classified as ",
-                "'Benign' or 'Likely benign' are not reported in this table, but ",
-                "will appear in the VCF output by the workflow. For further details ",
-                "on the terms in the 'Significance' column, please visit ",
-                a("this page", href=clinvar_docs_url),
-                '.')
-            tabs = Tabs()
-            for (index, sample_name, clinvar_data) in clinvar_vcf_data:
-                with tabs.add_tab(sample_name):
-                    # check if there are any ClinVar sites to report
-                    if clinvar_data.empty:
-                        h6('No ClinVar sites to report.')
-                    else:
-                        DataTable.from_pandas(
-                            clinvar_for_report,  export=True, use_index=False)
-    else:
-        # Annotations were skipped
-        with report.add_section('ClinVar variant annotations', 'ClinVar'):
-            p(
-                "This report was generated without annotations. To see"
-                " them, re-run the workflow without --skip_annotation.")
-
     with report.add_section('Karyogram', 'Karyogram'):
         karyoplot(vcf_data, args)
 
     with report.add_section('Size distribution', 'Size'):
-        sv_size_plots(vcf_data)
+        sv_size_plots(vcf_data, args.hist_sv_max_length)
 
     # Import jsons and create the progress bars before plotting
     values = []
@@ -378,12 +343,13 @@ def argparser():
         nargs='+',
         required=True)
     parser.add_argument(
-        "--clinvar_vcf",
-        nargs='+',
-        required=False)
-    parser.add_argument(
         "--genome",
         default='hg38',
+        required=False)
+    parser.add_argument(
+        "--hist_sv_max_length",
+        default=5000,
+        help="Max length of an SV to display in the histogram",
         required=False)
     parser.add_argument(
         "--eval_results",
@@ -404,8 +370,5 @@ def argparser():
     parser.add_argument(
         "--versions", required=True,
         help="directory contained CSVs containing name,version.")
-    parser.add_argument(
-        "--skip_annotation", action="store_true",
-        help="Do not show ClinVar variants in report.")
 
     return parser

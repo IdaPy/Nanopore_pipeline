@@ -4,6 +4,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [v1.9.2]
+### Fixed
+- `--joint_phasing` generating single-chromosome VCF files.
+
+## [v1.9.1]
+### Changed
+- ClinVar annotation of SVs has been temporarily removed due to not being correctly incorporated. SnpEff annotations are still produced as part of the final SV VCF.
+- New documentation
+### Removed
+- `--annotation_threads` parameter, as the SnpEff process does not support multithreading.
+### Fixed
+- Truncated SV VCF header generated from `vcfsort`.
+- `sed` crashing with I/O error in some instances.
+- Missing flagstats file in output directory.
+
+
+## [v1.9.0]
+### Added
+- STR workflow report now includes additional plots which display repeat units and interruptions in each supporting read
+- CNV workflow now outputs an indexed VCF file to the output directory
+### Changed
+- Legend symbols in STR genotpying plot
+- Unambiguous naming of bedMethyl files generated with `--mod`
+    - Unphased outputs will have the pattern `[sample_name].wf_mods.bedmethyl.gz`
+    - Phased outputs will have the pattern `[sample_name]_[1|2|ungrouped].wf_mods.bedmethyl.gz`
+### Fixed
+- Report step failing if bcftools stats file has only some sub-sections
+- Clair3 ignoring the bed file
+- merge_haplotagged_contigs incorrectly generating intermediate CRAM when input is BAM
+- STR content generation failing due to forward slash in disease name in `variant_catalog_hg38.json`
+- Report name for the read alignment statistics now follows the pattern `[sample_name].wf-human-alignment-report.html`
+
+## [v1.8.3]
+### Fixed
+- configure-jbrowse breaking on unescaped spaces
+
+## [v1.8.2]
+### Added
+- The SNP workflow will filter the final VCF to only return calls in the regions specified with `--bed`
+    - Avoid clair3 calling variants in regions that flank those specified in the BED
+- Add a process to sanitise BED files
+### Fixed
+- SNP subworkflow was ignoring BED file and analysing all regions
+- Report SV crashing when generating the size plots with only large indels
+- Downsampling not working when targeting regions with `--bed`
+- `--phase_mod` not emitting the haplotagged bam files
+- Report crashing when loading a clinvar-annotated VCF file with multiple `GENEINFO`/`CLNVC` entries
+### Removed
+- Default local executor CPU and RAM limits
+
+## [v1.8.1]
+### Fixed
+- SV size barchart causing extremely large reports.
+    - The plot has been replaced with a distribution plot fixed to +/- 5KBp. The summary table reports the INS and DEL min/max values.
+- Workflow could not be launched from EPI2ME desktop app due to incorrectly quoted fields in schema
+
 ## [v1.8.0]
 ### Changed
 - replaced `--methyl` with `--mod`, and `--phase_methyl` with `--phase_mod`

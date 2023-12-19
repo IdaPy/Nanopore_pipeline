@@ -1,7 +1,6 @@
 import groovy.json.JsonBuilder
 
 process cram_cache {
-    time 6.h
     input:
         path reference
     output:
@@ -17,8 +16,6 @@ process cram_cache {
 
 process index_ref_fai {
     cpus 1
-    memory 16.GB
-    time 6.h
     input:
         file reference
     output:
@@ -165,12 +162,12 @@ process configure_jbrowse {
         path("jbrowse.json")
     script:
     boolean output_bam = xam_meta.output
-    def snp_variant = params.snp ? "--variant snp ${params.out_dir}/${params.sample_name}.wf_snp.vcf.gz ${params.out_dir}/${params.sample_name}.wf_snp.vcf.gz.tbi" : ''
-    def sv_variant = params.sv ? "--variant sv ${params.out_dir}/${params.sample_name}.wf_sv.vcf.gz ${params.out_dir}/${params.sample_name}.wf_sv.vcf.gz.tbi" : ''
-    def alignment = output_bam ? "--alignment ${params.out_dir}/${xam.name} ${params.out_dir}/${xam_idx.name}" : ''
+    def snp_variant = params.snp ? "--variant snp '${params.out_dir}/${params.sample_name}.wf_snp.vcf.gz' '${params.out_dir}/${params.sample_name}.wf_snp.vcf.gz.tbi'" : ''
+    def sv_variant = params.sv ? "--variant sv '${params.out_dir}/${params.sample_name}.wf_sv.vcf.gz' '${params.out_dir}/${params.sample_name}.wf_sv.vcf.gz.tbi'" : ''
+    def alignment = output_bam ? "--alignment '${params.out_dir}/${xam.name}' '${params.out_dir}/${xam_idx.name}'" : ''
     """
     workflow-glue configure_jbrowse \
-        --reference ${ref} "${params.out_dir}/${ref.name}" "${params.out_dir}/${ref_idx.name}" \
+        --reference ${ref} '${params.out_dir}/${ref.name}' '${params.out_dir}/${ref_idx.name}' \
         ${alignment} \
         ${snp_variant} \
         ${sv_variant} > jbrowse.json
@@ -197,15 +194,18 @@ process eval_downsampling {
     cpus 1
     input:
         path mosdepth_summary
+        path bed
     output:
         path "ratio.txt", emit: downsampling_ratio
-    shell:
-        '''
+    script:
+        def with_bed = bed.name != 'OPTIONAL_FILE' ? "--bed ${bed}" : ""
+        """
         workflow-glue downsampling_ratio \
-            --downsample_depth !{params.downsample_coverage_target} \
-            --margin !{params.downsample_coverage_margin} \
-            --summary !{mosdepth_summary} > ratio.txt
-        '''
+            --downsample_depth ${params.downsample_coverage_target} \
+            --margin ${params.downsample_coverage_margin} \
+            --summary ${mosdepth_summary} \
+            ${with_bed} > ratio.txt
+        """
 }
 
 
@@ -306,9 +306,10 @@ process failedQCReport  {
         // file for each chromosome. This will display the intervals not in the context of the chromosome (so showing a peak in
         // a small region, and flat everywhere else) but only for the regions selected.
         def genome_wide_depth = params.bed ? "" : "--reference_fai ref.fasta.fai"
+        def report_name = "${params.sample_name}.wf-human-alignment-report.html"
         """
         workflow-glue report_al \\
-            --name wf-human-variation \\
+            --name ${report_name} \\
             --stats_dir readstats/ \\
             --flagstat_dir flagstats/ \\
             --depths_dir depths/ \\
@@ -340,9 +341,10 @@ process makeAlignmentReport {
         path "*.html"
 
     script:
+        def report_name = "${params.sample_name}.wf-human-alignment-report.html"
         """
         workflow-glue report_al \\
-            --name wf-human-variation \\
+            --name ${report_name} \\
             --stats_dir readstats/ \\
             --reference_fai ref.fasta.fai \\
             --flagstat_dir flagstats/ \\
@@ -388,7 +390,7 @@ process annotate_vcf {
     // variants - if any variants are present in this file, it is used to populate a table in 
     // the report.
     label "snpeff_annotation"
-    cpus {params.annotation_threads}
+    cpus 1
     input:
         tuple path("input.vcf.gz"), path("input.vcf.gz.tbi")
         val(genome)
@@ -448,5 +450,37 @@ process haploblocks {
         """
         # Prepare correct input file
         whatshap stats --gtf=${params.sample_name}.wf_${output_label}.haploblocks.gtf ${phased_vcf}
+        """
+}
+
+process bed_filter {
+    // filter a BED/VCF/GFF using a BED file
+    input:
+        tuple path(input, stageAs: 'input.gz'), path(input_tbi, stageAs: 'input.gz.tbi')
+        path(bed)
+        val(subworkflow)
+        val(file_type)
+    output:
+        tuple path("${params.sample_name}.wf_${subworkflow}.${file_type}.gz"), path("${params.sample_name}.wf_${subworkflow}.${file_type}.gz.tbi"), emit: filtered
+    script:
+        """
+        bedtools intersect -u -header -a input.gz -b ${bed} | bgzip -c > ${params.sample_name}.wf_${subworkflow}.${file_type}.gz
+        tabix ${params.sample_name}.wf_${subworkflow}.${file_type}.gz
+        """
+}
+
+process sanitise_bed {
+    // Sanitise a BED file:
+    // 1) check that chromosome labelling matches reference, exit if it doesn't
+    // 1) check and fix whitespace
+    // 2) sort by chromosome/position
+    input:
+        path(bed)
+        tuple path(ref), path(ref_idx), path(ref_cache), env(REF_PATH)
+    output:
+        path "${bed.baseName}.sanitised.bed"
+    script:
+        """
+        sanitise_bed.py --ref ${ref} --bed ${bed} --bed_out ${bed.baseName}.sanitised.bed
         """
 }

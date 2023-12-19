@@ -37,6 +37,8 @@ include {
     eval_downsampling;
     downsampling;
     annotate_vcf as annotate_snp_vcf;
+    bed_filter;
+    sanitise_bed
     } from './modules/local/common'
 
 include {
@@ -192,9 +194,7 @@ workflow {
         ref_index = Channel.of(ref_index_fp)
     }
 
-    if (!params.disable_ping) {
-        Pinguscript.ping_post(workflow, "start", "none", params.out_dir, params)
-    }
+    Pinguscript.ping_start(nextflow, workflow, params)
 
     // Determine if (re)alignment is required for input BAM
     if(!params.fast5_dir){
@@ -231,13 +231,19 @@ workflow {
     ref_channel = ref.concat(ref_index).concat(ref_cache).concat(ref_path).buffer(size: 4)
 
     // Set BED (and create the default all chrom BED if necessary)
+    // Make a second bed channel that won't be filtered based on coverage,
+    // to be used as a final ROI filter
     bed = null
-    default_bed_set = false
+    using_user_bed = false
     if(params.bed){
-        bed = Channel.fromPath(params.bed, checkIfExists: true)
+        using_user_bed = true
+        // Sanitise the input BED file
+        input_bed = Channel.fromPath(params.bed, checkIfExists: true)
+
+        bed = sanitise_bed(input_bed, ref_channel)
+        roi_filter_bed = bed
     }
     else {
-        default_bed_set = true
         bed = getAllChromosomesBed(ref_channel).all_chromosomes_bed
     }
 
@@ -318,7 +324,10 @@ workflow {
     // Check and perform downsampling if needed.
     if (params.downsample_coverage){
         // Define reduction rate
-        eval_downsampling(mosdepth_input.out.summary)
+        eval_downsampling(
+            mosdepth_input.out.summary,
+            params.bed ? mosdepth_stats.map{it[0]} : OPTIONAL
+        )
         eval_downsampling.out.downsampling_ratio
             .splitCsv()
             .branch{
@@ -427,12 +436,12 @@ workflow {
     // Set up BED for wf-human-snp, wf-human-str or --phase_mod
     // CW-2383: we first call the SNPs to generate an haplotagged bam file for downstream analyses
     if (params.snp || run_haplotagging) {
-        if(default_bed_set) {
-            // wf-human-snp uses OPTIONAL_FILE for empty bed for legacy reasons
-            snp_bed = Channel.fromPath("${projectDir}/data/OPTIONAL_FILE", checkIfExists: true)
+        if(using_user_bed) {
+            snp_bed = bed
         }
         else {
-            snp_bed = bed
+            // wf-human-snp uses OPTIONAL_FILE for empty bed for legacy reasons
+            snp_bed = Channel.fromPath("${projectDir}/data/OPTIONAL_FILE", checkIfExists: true)
         }
 
         if(params.clair3_model_path) {
@@ -456,7 +465,8 @@ workflow {
             clair3_model,
             genome_build,
             extensions,
-            run_haplotagging
+            run_haplotagging,
+            using_user_bed,
         )
     }
     
@@ -492,7 +502,7 @@ workflow {
 
     // Then, we finish working on the SNPs by refining with SVs and annotating them. This is needed to
     // maximise the interaction between Clair3 and Sniffles.
-    if (params.snp || params.joint_phasing){
+    if (params.snp || run_haplotagging){
         // Channel of results.
         // We drop the raw .vcf(.tbi) file from Clair3 in it to then add back the files in the 
         // final_vcf channel, allowing for the latest file to be emitted.
@@ -526,15 +536,23 @@ workflow {
             final_snp_vcf = clair_vcf.vcf_files
         }
 
+        // Filter by BED, if provided
+        if (params.bed) {
+            final_snp_vcf_filtered = bed_filter(final_snp_vcf, roi_filter_bed, "snp", "vcf")
+        }
+        else {
+            final_snp_vcf_filtered = final_snp_vcf
+        }
+
         // Run annotation, when requested.
         if (!params.annotation) {
-            final_vcf = final_snp_vcf
+            final_vcf = final_snp_vcf_filtered
             // no ClinVar VCF, pass empty VCF to makeReport
             clinvar_vcf = Channel.fromPath("${projectDir}/data/empty_clinvar.vcf")
         }
         else {
             // do annotation and get a list of ClinVar variants for the report
-            annotate_snp_vcf(final_snp_vcf, genome_build, "snp")
+            annotate_snp_vcf(final_snp_vcf_filtered, genome_build, "snp")
             final_vcf = annotate_snp_vcf.out.final_vcf
             clinvar_vcf = annotate_snp_vcf.out.final_vcf_clinvar
         }
@@ -626,6 +644,7 @@ workflow {
             // bam_fail can only exist if basecalling was performed
             bam_fail.flatten(),
             bam_stats.flatten(),
+            bam_flag.flatten(),
             mosdepth_stats.flatten(),
             mosdepth_summary.flatten(),
             mosdepth_perbase.flatten(),
@@ -640,12 +659,9 @@ workflow {
 
 }
 
-if (!params.disable_ping) {
-    workflow.onComplete {
-        Pinguscript.ping_post(workflow, "end", "none", params.out_dir, params)
-    }
-
-    workflow.onError {
-        Pinguscript.ping_post(workflow, "error", "$workflow.errorMessage", params.out_dir, params)
-    }
+workflow.onComplete {
+    Pinguscript.ping_complete(nextflow, workflow, params)
+}
+workflow.onError {
+    Pinguscript.ping_error(nextflow, workflow, params)
 }

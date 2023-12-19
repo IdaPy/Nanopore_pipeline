@@ -10,10 +10,9 @@ process dorado {
     label "wf_dorado"
     label "wf_basecalling"
     label "gpu"
-    time 6.h
     accelerator 1 // further configuration should be overloaded using withLabel:gpu
-    clusterOptions "-p node -N 1 -C gpu -A $params.project ${params.clusterOptions ?: ''}"
-	input:
+    cpus 8
+    input:
         tuple val(chunk_idx), path('*')
         tuple val(basecaller_cfg), path("dorado_model"), val(basecaller_model_override)
         tuple val(remora_cfg), path("remora_model"), val(remora_model_override)
@@ -29,6 +28,9 @@ process dorado {
         log.warn "Non-local workflow execution detected but GPU tasks are currently configured to run in serial, perhaps you should be using '-profile discrete_gpus' to parallelise GPU tasks for better performance?"
     }
     """
+    set +e
+    source /opt/nvidia/entrypoint.d/*-gpu-driver-check.sh # runtime driver check msg
+    set -e
     dorado basecaller \
         ${model_arg} . \
         ${remora_args} \
@@ -76,16 +78,14 @@ process qsFilter {
 
 process make_mmi {
     label "wf_basecalling"
-    cpus 16
-    memory 32.GB
-    time 6.h
+    cpus 4
     input:
         path(ref)
     output:
         path("ref.mmi")
     script:
     """
-    minimap2 -t 8 -x map-ont -d ref.mmi ${ref}
+    minimap2 -t ${task.cpus} -x map-ont -d ref.mmi ${ref}
     """
 }
 

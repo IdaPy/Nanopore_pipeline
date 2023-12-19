@@ -81,24 +81,12 @@ process sortVCF {
     input:
         file vcf
     output:
-        path "*.wf_sv.vcf", emit: vcf
+        path "${params.sample_name}.wf_sv.vcf.gz", emit: vcf_gz
+        path "${params.sample_name}.wf_sv.vcf.gz.tbi", emit: vcf_tbi
     script:
     """
-    vcfsort $vcf > ${params.sample_name}.wf_sv.vcf
-    """
-}
-
-
-process indexVCF {
-    label "wf_human_sv"
-    cpus 1
-    input:
-        file vcf
-    output:
-        path "${vcf}.gz", emit: vcf_gz
-        path "${vcf}.gz.tbi", emit: vcf_tbi
-    """
-    cat $vcf | bgziptabix ${vcf}.gz
+    bcftools sort -m 2G -T ./ -O z $vcf > ${params.sample_name}.wf_sv.vcf.gz
+    tabix -p vcf ${params.sample_name}.wf_sv.vcf.gz
     """
 }
 
@@ -141,32 +129,26 @@ process report {
     cpus 1
     input:
         file vcf
-        path clinvar_vcf
         file eval_json
         file versions
         path "params.json"
     output:
         path "*report.html", emit: html
     script:
-        def clinvar = clinvar_vcf ?: ""
-        def annotation = params.annotation ? "" : "--skip_annotation"
         def report_name = "${params.sample_name}.wf-human-sv-report.html"
         def evalResults = eval_json.name != 'OPTIONAL_FILE' ? "--eval_results ${eval_json}" : ""
     """
     workflow-glue report_sv \
         $report_name \
         --vcf $vcf \
-        --clinvar_vcf $clinvar \
         --params params.json \
         --params-hidden 'help,schema_ignore_params,${params.schema_ignore_params}' \
         --versions $versions \
         --revision ${workflow.revision} \
         --commit ${workflow.commitId} \
-        $annotation \
         $evalResults
     """
 }
-
 
 // See https://github.com/nextflow-io/nextflow/issues/1636
 // This is the only way to publish files from a workflow whilst
